@@ -1,0 +1,38 @@
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment/config overrides
+.env
+.env.*
+*.local.yaml
+*.local.yml
+
+# Local Reachy capture/debug artifacts
+reachy_*.jpg
+reachy_*.jpeg
+reachy_*.png
+
+# Local planning/session notes
+thoughts/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/

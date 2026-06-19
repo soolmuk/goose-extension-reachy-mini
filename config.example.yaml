@@ -1,0 +1,35 @@
+extensions:
+  reachy-mini:
+    type: stdio
+    # Use python -m so this works even when the console script install directory is not on PATH.
+    cmd: python3
+    args: ["-m", "goose_reachy_mini.server"]
+    timeout: 30
+    envs:
+      REACHY_MINI_MOCK: "1"
+      REACHY_MINI_MEDIA_BACKEND: "default"
+      REACHY_MINI_ENABLE_MOTION: "true"
+      REACHY_MINI_ENABLE_CAMERA: "true"
+      REACHY_MINI_ENABLE_AUDIO: "true"
+      REACHY_MINI_ENABLE_TRACKING: "true"
+    available_tools:
+      - reachy_get_status
+      - reachy_get_imu
+      - reachy_idle
+      - reachy_capture_image
+      - reachy_describe_current_view
+      - reachy_look_at_image_region
+      - reachy_track_head
+      - reachy_listen_direction
+      - reachy_look_toward_sound
+      - reachy_look
+      - reachy_gesture
+      - reachy_turn_body
+      - reachy_reset_pose
+      - reachy_play_expression
+      - reachy_stop_expression
+      - reachy_dance
+      - reachy_stop_dance
+      - reachy_listen_audio_sample
+      - reachy_play_audio
+      - reachy_say_text

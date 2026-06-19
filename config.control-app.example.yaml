@@ -1,0 +1,40 @@
+extensions:
+  reachy-mini:
+    type: stdio
+    cmd: python3
+    args: ["-m", "goose_reachy_mini.server"]
+    timeout: 30
+    envs:
+      # Prefer a running Reachy Mini Control App daemon automatically.
+      # The app itself decides whether it is using simulation or a real Reachy Mini;
+      # the extension reads /api/daemon/status and follows that mode.
+      REACHY_MINI_CONTROL_APP_AUTO: "1"
+      REACHY_MINI_CONTROL_APP: "1"
+      REACHY_MINI_CONTROL_APP_MEDIA_BACKEND: "auto"
+      # auto: simulation/mockup => visible Control App screen (includes webcam PiP),
+      #       real robot => raw robot camera stream.
+      # camera: always raw stream. screen: always macOS screen capture.
+      REACHY_MINI_CONTROL_APP_CAPTURE_SOURCE: "auto"
+      # Optional crop for screen capture: "x,y,width,height".
+      # REACHY_MINI_CONTROL_APP_SCREEN_CROP: "0,0,1600,1000"
+      REACHY_MINI_CONTROL_APP_URL: "http://127.0.0.1:8000"
+      REACHY_MINI_CONTROL_APP_DAEMON_URL: "http://127.0.0.1:8000"
+      REACHY_MINI_CONTROL_APP_TIMEOUT_SECONDS: "8"
+
+      # Optional: set this if the adapter cannot auto-detect the Control App venv.
+      # REACHY_MINI_CONTROL_APP_PYTHON: "/Users/<you>/Library/Application Support/com.pollen-robotics.reachy-mini/.venv/bin/python3"
+
+      # Optional: use this when the app exposes a direct HTTP snapshot/MJPEG endpoint.
+      # REACHY_MINI_CONTROL_APP_MEDIA_BACKEND: "http"
+      # REACHY_MINI_CONTROL_APP_CAMERA_URL: "http://127.0.0.1:PORT/path/to/camera"
+
+      # Camera-only adapter: disable capabilities that the Control App adapter does not expose.
+      REACHY_MINI_ENABLE_MOTION: "false"
+      REACHY_MINI_ENABLE_CAMERA: "true"
+      REACHY_MINI_ENABLE_AUDIO: "false"
+      REACHY_MINI_ENABLE_TRACKING: "false"
+    available_tools:
+      - reachy_get_status
+      - reachy_idle
+      - reachy_capture_image
+      - reachy_describe_current_view
