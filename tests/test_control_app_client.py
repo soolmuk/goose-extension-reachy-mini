@@ -35,6 +35,7 @@ class _Handler(BaseHTTPRequestHandler):
         "no_media": False,
         "media_released": False,
     }
+    doa_response: dict[str, object] | None = {"angle": 1.5707963267948966, "speech_detected": True}
     posts: list[tuple[str, dict[str, object]]] = []
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
@@ -45,6 +46,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", json.dumps(payload).encode("utf-8"))
         elif self.path == "/api/daemon/status":
             self._send(200, "application/json", json.dumps(self.daemon_status).encode("utf-8"))
+        elif self.path == "/api/state/doa":
+            self._send(200, "application/json", json.dumps(self.doa_response).encode("utf-8"))
         elif self.path == "/":
             self._send(200, "text/html", b'<html><body><img src="/snapshot.jpg"></body></html>')
         else:
@@ -53,12 +56,24 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - stdlib callback name
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b"{}"
-        payload = json.loads(body.decode("utf-8")) if body.strip() else {}
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in content_type:
+            payload = {"_raw_bytes": len(body), "_content_type": content_type}
+        else:
+            payload = json.loads(body.decode("utf-8")) if body.strip() else {}
         self.posts.append((self.path, payload))
         if self.path == "/api/move/goto":
             self._send(200, "application/json", b'{"uuid":"00000000-0000-0000-0000-000000000001"}')
         elif self.path == "/api/move/stop":
             self._send(200, "application/json", b'{"message":"stopped"}')
+        elif self.path == "/api/media/sounds/upload":
+            self._send(200, "application/json", b'{"status":"ok","path":"/tmp/reachy_mini_sounds/test.wav"}')
+        elif self.path == "/api/media/play_sound":
+            self._send(200, "application/json", b'{"status":"ok"}')
+        elif self.path == "/api/media/wobbling/enable":
+            self._send(200, "application/json", b'{"status":"ok","wobbling":true}')
+        elif self.path == "/api/media/wobbling/disable":
+            self._send(200, "application/json", b'{"status":"ok","wobbling":false}')
         else:
             self._send(404, "application/json", b'{"detail":"not found"}')
 
@@ -76,6 +91,7 @@ class _Handler(BaseHTTPRequestHandler):
 @contextlib.contextmanager
 def _server() -> Iterator[str]:
     _Handler.posts = []
+    _Handler.doa_response = {"angle": 1.5707963267948966, "speech_detected": True}
     _Handler.daemon_status = {
         "type": "daemon_status",
         "robot_name": "reachy_mini",
@@ -421,3 +437,94 @@ def test_control_app_upper_image_region_uses_negative_pitch_in_simulation() -> N
     assert path == "/api/move/goto"
     assert payload["head_pose"]["yaw"] == 0.22
     assert payload["head_pose"]["pitch"] == -0.18
+
+
+def test_control_app_listen_direction_reads_doa() -> None:
+    with _server() as base_url:
+        _Handler.doa_response = {"angle": 0.0, "speech_detected": True}
+        client = ControlAppClient(
+            base_url=base_url,
+            daemon_url=base_url,
+            motion_timeout_seconds=1,
+        )
+        result = client.listen_direction(0.1)
+
+    assert result.speech_detected is True
+    assert result.direction == "left"
+    assert result.angle_radians == 0.0
+
+
+def test_control_app_play_audio_uploads_and_plays_sound() -> None:
+    with _server() as base_url:
+        client = ControlAppClient(
+            base_url=base_url,
+            daemon_url=base_url,
+            motion_timeout_seconds=1,
+        )
+        result = client.play_audio(b"RIFFdata", "audio/wav", wobble=False)
+
+    assert result.status == "ok"
+    assert result.details["filename"] == "/tmp/reachy_mini_sounds/test.wav"
+    assert [path for path, _payload in _Handler.posts] == [
+        "/api/media/sounds/upload",
+        "/api/media/play_sound",
+    ]
+    upload_payload = _Handler.posts[0][1]
+    assert upload_payload["_raw_bytes"] > len(b"RIFFdata")
+    assert "multipart/form-data" in upload_payload["_content_type"]
+    assert _Handler.posts[1][1] == {"file": "/tmp/reachy_mini_sounds/test.wav"}
+
+
+def test_control_app_play_audio_wobble_enables_wobbling_before_play(monkeypatch) -> None:
+    scheduled: list[float] = []
+
+    def fake_schedule(self: ControlAppClient, delay_seconds: float) -> None:
+        scheduled.append(delay_seconds)
+
+    monkeypatch.setattr(ControlAppClient, "_schedule_wobble_disable", fake_schedule)
+    with _server() as base_url:
+        client = ControlAppClient(
+            base_url=base_url,
+            daemon_url=base_url,
+            motion_timeout_seconds=1,
+        )
+        result = client.play_audio(b"RIFFdata", "audio/wav", wobble=True)
+
+    assert result.status == "ok"
+    assert scheduled == [10.0]
+    assert [path for path, _payload in _Handler.posts] == [
+        "/api/media/wobbling/enable",
+        "/api/media/sounds/upload",
+        "/api/media/play_sound",
+    ]
+
+
+def test_control_app_track_head_speaker_uses_doa_and_look_preset() -> None:
+    with _server() as base_url:
+        _Handler.doa_response = {"angle": 0.0, "speech_detected": True}
+        client = ControlAppClient(
+            base_url=base_url,
+            daemon_url=base_url,
+            preset_policy="simulation_only",
+            motion_timeout_seconds=1,
+        )
+        result = client.track_head(enabled=True, mode="speaker", duration_seconds=0.05)
+
+    assert result.status == "ok"
+    assert result.details["samples"]
+    assert result.details["moves"]
+    assert any(path == "/api/move/goto" for path, _payload in _Handler.posts)
+    goto_payload = next(payload for path, payload in _Handler.posts if path == "/api/move/goto")
+    assert goto_payload["head_pose"]["yaw"] == 0.25
+
+
+def test_control_app_track_head_face_is_unavailable() -> None:
+    client = ControlAppClient(
+        daemon_status={"type": "daemon_status", "robot_name": "reachy_mini", "mockup_sim_enabled": True},
+        preset_policy="simulation_only",
+    )
+
+    result = client.track_head(enabled=True, mode="face", duration_seconds=0.1)
+
+    assert result.status == "unavailable"
+    assert "speaker" in (result.message or "")

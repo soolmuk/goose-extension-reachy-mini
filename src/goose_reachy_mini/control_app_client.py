@@ -1,8 +1,8 @@
-"""Reachy Mini Control App camera adapter.
+"""Reachy Mini Control App adapter.
 
-This adapter is intentionally conservative: it only reads camera frames exposed by a
-locally running Control App. Motion/audio actions remain unavailable unless a verified
-safe Control App API is added later.
+This adapter is intentionally conservative: it exposes camera frames and bounded
+high-level presets/audio operations through a locally running Control App daemon.
+Direct raw actuator, joint, torque, and arbitrary keyframe APIs remain unavailable.
 
 Camera capture can use either:
 - HTTP snapshot/MJPEG/JSON endpoints, when a direct endpoint is configured; or
@@ -18,11 +18,14 @@ import binascii
 import html
 import io
 import json
+import math
+import mimetypes
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -204,12 +207,13 @@ class ControlAppClient:
             "control_app_capture_source": self.capture_source,
             "control_app_screen_crop": self.screen_crop,
             "camera_available": self.configured and media_available,
-            "audio_available": False,
+            "audio_available": self.configured and media_available,
             "imu_available": False,
             "motion_available": motion_available,
             "recorded_emotions_available": motion_available,
             "dances_available": motion_available,
-            "head_tracking_available": False,
+            "head_tracking_available": motion_available and media_available,
+            "control_app_tracking_modes": ["speaker"] if motion_available and media_available else [],
             "mock_mode": False,
             "control_app_mode": True,
             "control_app_runtime_mode": mode,
@@ -326,12 +330,90 @@ class ControlAppClient:
         )
 
     def track_head(self, enabled: bool, mode: str, duration_seconds: float) -> MotionResult:
-        return self._unavailable_motion(
+        if not enabled:
+            return MotionResult(
+                action="track_head",
+                message="Control App speaker tracking stopped or was not running.",
+                details={"enabled": enabled, "mode": mode, "duration_seconds": duration_seconds},
+            )
+        if mode != "speaker":
+            return MotionResult(
+                status="unavailable",
+                action="track_head",
+                message=(
+                    "Control App tracking currently supports only mode='speaker' via "
+                    "Direction-of-Arrival. Camera-based face/person tracking is not implemented."
+                ),
+                details={"enabled": enabled, "mode": mode, "duration_seconds": duration_seconds},
+            )
+        unavailable = self._motion_unavailable_due_to_policy(
             "track_head", enabled=enabled, mode=mode, duration_seconds=duration_seconds
+        )
+        if unavailable:
+            return unavailable
+
+        deadline = time.monotonic() + duration_seconds
+        moves: list[dict[str, object]] = []
+        samples: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            listen_window = min(0.5, max(deadline - time.monotonic(), 0.05))
+            direction_result = self.listen_direction(listen_window)
+            direction_payload = direction_result.model_dump()
+            samples.append(direction_payload)
+            direction = direction_result.direction
+            if direction_result.speech_detected and direction:
+                move = self.look(direction, "small")
+                moves.append(move.model_dump())
+            # Avoid a tight loop if listen_direction returned immediately.
+            time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
+        return MotionResult(
+            action="track_head",
+            message="Control App speaker tracking completed for the requested duration.",
+            details={
+                "enabled": enabled,
+                "mode": mode,
+                "duration_seconds": duration_seconds,
+                "samples": samples,
+                "moves": moves,
+            },
         )
 
     def listen_direction(self, duration_seconds: float) -> DirectionResult:
-        raise ToolError("Audio input is not exposed by the Control App camera adapter.")
+        daemon_status = self._refresh_daemon_status()
+        if _daemon_media_unavailable(daemon_status):
+            raise ToolError(
+                "Control App audio is not available. Start the Control App media mode "
+                "or switch it out of no-media/released state, then try again."
+            )
+
+        deadline = time.monotonic() + duration_seconds
+        last_angle: float | None = None
+        while True:
+            payload = self._request_json("GET", "state/doa")
+            if payload.get("result") is None and len(payload) == 1:
+                speech_detected = False
+                angle = None
+            else:
+                speech_detected = bool(payload.get("speech_detected", False))
+                raw_angle = payload.get("angle")
+                angle = float(raw_angle) if isinstance(raw_angle, int | float) else None
+                if angle is not None:
+                    last_angle = angle
+            if speech_detected:
+                return DirectionResult(
+                    speech_detected=True,
+                    direction=_direction_from_doa_angle(angle),
+                    angle_radians=angle,
+                    confidence="medium",
+                )
+            if time.monotonic() >= deadline:
+                return DirectionResult(
+                    speech_detected=False,
+                    direction=_direction_from_doa_angle(last_angle) if last_angle is not None else None,
+                    angle_radians=last_angle,
+                    confidence="low",
+                )
+            time.sleep(min(0.2, max(deadline - time.monotonic(), 0.0)))
 
     def play_expression(
         self,
@@ -416,10 +498,47 @@ class ControlAppClient:
         return self._stop_active_move("stop_dance", "dance")
 
     def listen_audio_sample(self, duration_seconds: float) -> dict[str, object]:
-        raise ToolError("Audio capture is not exposed by the Control App camera adapter.")
+        raise ToolError(
+            "Raw audio capture is not exposed by the Control App daemon. "
+            "Use reachy_listen_direction for Direction-of-Arrival speech detection."
+        )
 
     def play_audio(self, audio_bytes: bytes, mime_type: str, wobble: bool = False) -> MotionResult:
-        raise ToolError("Audio playback is not exposed by the Control App camera adapter.")
+        daemon_status = self._refresh_daemon_status()
+        if _daemon_media_unavailable(daemon_status):
+            raise ToolError(
+                "Control App audio playback is not available. Start the Control App media mode "
+                "or switch it out of no-media/released state, then try again."
+            )
+        wobble_response: dict[str, object] | None = None
+        try:
+            if wobble:
+                wobble_response = self._post_json("media/wobbling/enable", {})
+            filename = self._upload_sound(audio_bytes, mime_type)
+            response = self._post_json("media/play_sound", {"file": filename})
+        except Exception:
+            if wobble:
+                try:
+                    self._post_json("media/wobbling/disable", {})
+                except ToolError:
+                    pass
+            raise
+        details: dict[str, object] = {
+            "bytes": len(audio_bytes),
+            "mime_type": mime_type,
+            "wobble": wobble,
+            "filename": filename,
+            "daemon_response": response,
+        }
+        if wobble_response is not None:
+            details["wobble_response"] = wobble_response
+            details["wobble_disable_scheduled_seconds"] = 10.0
+            self._schedule_wobble_disable(delay_seconds=10.0)
+        return MotionResult(
+            action="play_audio",
+            message="Audio clip sent to the Control App daemon.",
+            details=details,
+        )
 
     def say_text(self, text: str, voice: str, wobble: bool = True) -> MotionResult:
         return MotionResult(
@@ -524,6 +643,69 @@ class ControlAppClient:
 
     def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
         return self._request_json("POST", path, payload)
+
+    def _schedule_wobble_disable(self, delay_seconds: float) -> None:
+        def disable() -> None:
+            try:
+                self._post_json("media/wobbling/disable", {})
+            except ToolError:
+                pass
+
+        timer = threading.Timer(delay_seconds, disable)
+        timer.daemon = True
+        timer.start()
+
+    def _upload_sound(self, audio_bytes: bytes, mime_type: str) -> str:
+        extension = _audio_extension(mime_type)
+        filename = f"goose_reachy_audio_{int(time.time() * 1000)}{extension}"
+        boundary = f"----goose-reachy-mini-{int(time.time() * 1000000)}"
+        body = b"".join(
+            [
+                f"--{boundary}\r\n".encode("ascii"),
+                (
+                    f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+                    f"Content-Type: {mime_type}\r\n\r\n"
+                ).encode("utf-8"),
+                audio_bytes,
+                f"\r\n--{boundary}--\r\n".encode("ascii"),
+            ]
+        )
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "goose-reachy-mini-control-app-adapter/0.1",
+        }
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+        request = Request(
+            self._daemon_api_url("media/sounds/upload"),
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.motion_timeout_seconds) as response:  # nosec B310
+                response_data = response.read(512 * 1024)
+        except HTTPError as exc:
+            detail = exc.read(4096).decode("utf-8", errors="replace").strip()
+            raise ToolError(
+                "Control App sound upload HTTP error "
+                f"{exc.code}: {detail or exc.reason}"
+            ) from exc
+        except URLError as exc:
+            raise ToolError(f"Could not reach Control App sound upload API: {exc}") from exc
+        except TimeoutError as exc:
+            raise ToolError("Timed out uploading sound to Control App daemon") from exc
+
+        try:
+            decoded = json.loads(response_data.decode("utf-8")) if response_data.strip() else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ToolError("Control App sound upload returned non-JSON data.") from exc
+        if isinstance(decoded, dict):
+            path = decoded.get("path")
+            if isinstance(path, str) and path:
+                return path
+        return filename
 
     def _post_goto(
         self, payload: dict[str, object], active_key: str | None = None
@@ -1188,6 +1370,36 @@ def _daemon_media_available(status: dict[str, Any]) -> bool:
 
 def _daemon_media_unavailable(status: dict[str, Any]) -> bool:
     return not _daemon_media_available(status)
+
+
+def _direction_from_doa_angle(angle: float | None) -> str | None:
+    if angle is None:
+        return None
+    # Control App DoA uses 0=left, pi/2=front, pi=right.
+    clamped = max(0.0, min(math.pi, angle))
+    if clamped < math.pi / 6:
+        return "left"
+    if clamped < (math.pi / 2) - (math.pi / 8):
+        return "front_left"
+    if clamped <= (math.pi / 2) + (math.pi / 8):
+        return "center"
+    if clamped < 5 * math.pi / 6:
+        return "front_right"
+    return "right"
+
+
+def _audio_extension(mime_type: str) -> str:
+    explicit = {
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/ogg": ".ogg",
+    }
+    if mime_type in explicit:
+        return explicit[mime_type]
+    guessed = mimetypes.guess_extension(mime_type)
+    return guessed or ".wav"
 
 
 def _host_from_url(url: str | None) -> str | None:

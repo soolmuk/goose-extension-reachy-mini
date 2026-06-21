@@ -41,7 +41,7 @@ REACHY_MINI_MOCK=1 goose-reachy-mini
 
 ## Reachy Mini Control App 어댑터
 
-Reachy Mini Control App만 실행 중이고 goose를 로봇 SDK에 직접 연결하지 않는 경우, Control App 어댑터와 함께 확장을 실행하세요. 이 어댑터는 카메라 촬영을 지원하며, 정책상 허용된 경우 로컬 Control App 데몬을 통해 안전한 고수준 동작 프리셋 일부도 실행할 수 있습니다. 오디오 입력, 머리/사람/화자 트래킹, TTS는 아직 이 어댑터에서 사용할 수 없습니다.
+Reachy Mini Control App만 실행 중이고 goose를 로봇 SDK에 직접 연결하지 않는 경우, Control App 어댑터와 함께 확장을 실행하세요. 이 어댑터는 카메라 촬영을 지원하며, 정책상 허용된 경우 로컬 Control App 데몬을 통해 안전한 고수준 동작 프리셋 일부도 실행할 수 있습니다. 또한 Control App의 음성 방향 감지(DoA)와 데몬 오디오 재생을 지원합니다. 원시 오디오 녹음, 카메라 기반 머리/사람 트래킹, TTS는 아직 이 어댑터에서 사용할 수 없습니다.
 
 기본적으로 확장은 `http://127.0.0.1:8000` / `http://localhost:8000`에서 실행 중인 Control App 데몬을 자동 감지하고, 내장 mock 클라이언트 대신 이를 사용할 수 있습니다. 즉, 확장은 Control App이 현재 사용하는 모드를 그대로 따릅니다: mockup 시뮬레이션, MuJoCo 시뮬레이션, Lite USB 로봇 또는 무선 로봇. 시뮬레이션과 실제 하드웨어를 위해 별도 goose 설정을 만들 필요가 없습니다.
 
@@ -108,6 +108,14 @@ Control App 동작 프리셋은 별도 정책으로 제어됩니다.
 - `REACHY_MINI_CONTROL_APP_PRESET_POLICY=always`는 실제 로봇 모드에서도 프리셋을 활성화합니다. 명시적인 opt-in 용도이므로 물리 환경이 안전할 때만 사용하세요.
 
 Control App 프리셋 어댑터는 로컬 데몬의 `/api/move/goto`로 제한된 요청을 보냅니다. 표정과 춤은 초기 구현에서 임의 recorded-move 경로가 아니라 안전한 fallback 제스처 시퀀스를 사용합니다.
+
+Control App 오디오/주의 기능은 데몬 수준 API를 사용합니다.
+
+- `reachy_listen_direction`은 `/api/state/doa`를 읽고 보고된 각도를 안전한 방향 프리셋으로 변환합니다.
+- `reachy_look_toward_sound`는 DoA와 단일 안전 `look` 프리셋을 조합합니다.
+- `reachy_track_head`는 `mode="speaker"`만 지원합니다. 카메라 기반 `face`, `person` 트래킹은 아직 사용할 수 없습니다.
+- `reachy_play_audio`는 검증된 짧은 오디오 클립을 `/api/media/sounds/upload`로 업로드하고 `/api/media/play_sound`로 재생합니다. 선택적 wobble은 `/api/media/wobbling/enable`을 사용하고 나중에 disable을 예약합니다.
+- `reachy_listen_audio_sample`과 `reachy_say_text`는 별도 TTS 경로가 추가되기 전까지 Control App 어댑터에서 사용할 수 없습니다.
 
 ## goose 설정
 

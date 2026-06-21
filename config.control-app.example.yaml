@@ -36,8 +36,12 @@ extensions:
 
       REACHY_MINI_ENABLE_MOTION: "true"
       REACHY_MINI_ENABLE_CAMERA: "true"
-      REACHY_MINI_ENABLE_AUDIO: "false"
-      REACHY_MINI_ENABLE_TRACKING: "false"
+      # Enables Control App DoA (speech direction) and audio playback tools.
+      # Raw audio capture and TTS are still not implemented in this adapter.
+      REACHY_MINI_ENABLE_AUDIO: "true"
+      # Enables short speaker tracking via DoA + safe look presets.
+      # Camera-based face/person tracking is still not implemented in this adapter.
+      REACHY_MINI_ENABLE_TRACKING: "true"
     available_tools:
       - reachy_get_status
       - reachy_idle
@@ -52,3 +56,7 @@ extensions:
       - reachy_stop_expression
       - reachy_dance
       - reachy_stop_dance
+      - reachy_track_head
+      - reachy_listen_direction
+      - reachy_look_toward_sound
+      - reachy_play_audio

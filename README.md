@@ -49,8 +49,10 @@ when started directly.
 If you are running only the Reachy Mini Control App and not connecting goose
 straight to the robot SDK, run the extension with the Control App adapter. The
 adapter supports camera capture and, when allowed by policy, a safe subset of
-high-level motion presets through the local Control App daemon. Audio input,
-head/person/speaker tracking, and TTS remain unavailable in this adapter for now.
+high-level motion presets through the local Control App daemon. It also supports
+Control App Direction-of-Arrival speech direction and daemon audio playback.
+Raw audio recording, camera-based head/person tracking, and TTS remain unavailable
+in this adapter for now.
 
 By default the extension can auto-detect a running Control App daemon at
 `http://127.0.0.1:8000` / `http://localhost:8000` and use it instead of the
@@ -141,6 +143,19 @@ Control App motion presets are controlled separately:
 The Control App preset adapter posts bounded `/api/move/goto` requests to the
 local daemon. Expressions and dances initially use safe fallback gesture
 sequences rather than arbitrary recorded-move paths.
+
+Control App audio/attention support uses daemon-level APIs:
+
+- `reachy_listen_direction` reads `/api/state/doa` and maps the reported angle to
+  a safe direction preset.
+- `reachy_look_toward_sound` combines DoA with a single safe `look` preset.
+- `reachy_track_head` supports `mode="speaker"` only; camera-based `face` and
+  `person` tracking remain unavailable.
+- `reachy_play_audio` uploads a short validated audio clip to
+  `/api/media/sounds/upload` and plays it with `/api/media/play_sound`. Optional
+  wobble uses `/api/media/wobbling/enable` and schedules a later disable.
+- `reachy_listen_audio_sample` and `reachy_say_text` remain unavailable for the
+  Control App adapter unless a separate TTS path is added later.
 
 ## goose configuration
 
