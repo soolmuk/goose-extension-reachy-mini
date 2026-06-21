@@ -44,13 +44,13 @@ REACHY_MINI_MOCK=1 goose-reachy-mini
 when started directly.
 
 
-## Reachy Mini Control App camera adapter
+## Reachy Mini Control App adapter
 
 If you are running only the Reachy Mini Control App and not connecting goose
-straight to the robot SDK, run the extension with the Control App camera adapter.
-This adapter is currently **camera-only**: motion, audio, IMU, dance, and
-expression tools remain unavailable unless a verified Control App API is added
-later.
+straight to the robot SDK, run the extension with the Control App adapter. The
+adapter supports camera capture and, when allowed by policy, a safe subset of
+high-level motion presets through the local Control App daemon. Audio input,
+head/person/speaker tracking, and TTS remain unavailable in this adapter for now.
 
 By default the extension can auto-detect a running Control App daemon at
 `http://127.0.0.1:8000` / `http://localhost:8000` and use it instead of the
@@ -126,6 +126,21 @@ If captures still return mock images, check `reachy_get_status`; it should show
 Control App's current runtime mode via `control_app_runtime_mode` and related
 fields such as `control_app_simulation_enabled`, `control_app_mockup_sim_enabled`,
 `control_app_media_released`, and `control_app_camera_specs_name`.
+
+Control App motion presets are controlled separately:
+
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=simulation_only` (default) allows
+  `look`, `look_at_image_region`, `gesture`, `turn_body`, `reset_pose`,
+  expression fallbacks, dance fallbacks, and stop commands only when the daemon
+  reports `simulation` or `mockup_simulation` mode.
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=off` disables these daemon motion
+  presets.
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=always` enables them in real robot modes
+  too. This is an explicit opt-in; use it only when the physical setup is safe.
+
+The Control App preset adapter posts bounded `/api/move/goto` requests to the
+local daemon. Expressions and dances initially use safe fallback gesture
+sequences rather than arbitrary recorded-move paths.
 
 ## goose configuration
 
@@ -244,6 +259,8 @@ Environment variables:
 - `REACHY_MINI_CONTROL_APP_SIGNALING_HOST=localhost`
 - `REACHY_MINI_CONTROL_APP_SIGNALING_PORT=8443`
 - `REACHY_MINI_CONTROL_APP_TIMEOUT_SECONDS=5`
+- `REACHY_MINI_CONTROL_APP_MOTION_TIMEOUT_SECONDS=3`
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=simulation_only|off|always`
 - `REACHY_MINI_CONTROL_APP_AUTH_TOKEN=<optional bearer token>`
 - `REACHY_MINI_ENABLE_MOTION=true|false`
 - `REACHY_MINI_ENABLE_CAMERA=true|false`

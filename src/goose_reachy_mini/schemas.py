@@ -16,6 +16,7 @@ def utc_now_iso() -> str:
 ImageFormat = Literal["jpeg", "png"]
 DetailLevel = Literal["brief", "normal", "detailed"]
 Intensity = Literal["small", "medium"]
+ControlAppPresetPolicy = Literal["off", "simulation_only", "always"]
 LookDirection = Literal["center", "left", "right", "up", "down", "front_left", "front_right"]
 ImageRegion = Literal[
     "center",
@@ -115,6 +116,8 @@ class Settings(BaseModel):
     control_app_daemon_url: str | None = None
     control_app_signaling_host: str = "localhost"
     control_app_signaling_port: int = Field(default=8443, ge=1, le=65535)
+    control_app_preset_policy: ControlAppPresetPolicy = "simulation_only"
+    control_app_motion_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
     enable_motion: bool = True
     enable_audio: bool = True
     enable_camera: bool = True
@@ -150,6 +153,12 @@ class Settings(BaseModel):
             control_app_daemon_url=os.getenv("REACHY_MINI_CONTROL_APP_DAEMON_URL") or None,
             control_app_signaling_host=os.getenv("REACHY_MINI_CONTROL_APP_SIGNALING_HOST", "localhost"),
             control_app_signaling_port=_env_int("REACHY_MINI_CONTROL_APP_SIGNALING_PORT", 8443),
+            control_app_preset_policy=os.getenv(
+                "REACHY_MINI_CONTROL_APP_PRESET_POLICY", "simulation_only"
+            ),
+            control_app_motion_timeout_seconds=_env_float(
+                "REACHY_MINI_CONTROL_APP_MOTION_TIMEOUT_SECONDS", 3.0
+            ),
             enable_motion=_env_bool("REACHY_MINI_ENABLE_MOTION", default=True),
             enable_audio=_env_bool("REACHY_MINI_ENABLE_AUDIO", default=True),
             enable_camera=_env_bool("REACHY_MINI_ENABLE_CAMERA", default=True),

@@ -11,15 +11,21 @@ extensions:
       REACHY_MINI_CONTROL_APP_AUTO: "1"
       REACHY_MINI_CONTROL_APP: "1"
       REACHY_MINI_CONTROL_APP_MEDIA_BACKEND: "auto"
-      # auto: simulation/mockup => visible Control App screen (includes webcam PiP),
-      #       real robot => raw robot camera stream.
-      # camera: always raw stream. screen: always macOS screen capture.
+      # auto/camera: use the raw Reachy/Control App media stream.
+      # screen: always capture the visible macOS screen.
       REACHY_MINI_CONTROL_APP_CAPTURE_SOURCE: "auto"
       # Optional crop for screen capture: "x,y,width,height".
       # REACHY_MINI_CONTROL_APP_SCREEN_CROP: "0,0,1600,1000"
       REACHY_MINI_CONTROL_APP_URL: "http://127.0.0.1:8000"
       REACHY_MINI_CONTROL_APP_DAEMON_URL: "http://127.0.0.1:8000"
       REACHY_MINI_CONTROL_APP_TIMEOUT_SECONDS: "8"
+
+      # Motion preset policy for the Control App daemon:
+      # - simulation_only: allow high-level presets only in simulation/mockup simulation.
+      # - off: disable Control App motion presets.
+      # - always: allow presets even in real robot modes (explicit opt-in; use with care).
+      REACHY_MINI_CONTROL_APP_PRESET_POLICY: "simulation_only"
+      REACHY_MINI_CONTROL_APP_MOTION_TIMEOUT_SECONDS: "3"
 
       # Optional: set this if the adapter cannot auto-detect the Control App venv.
       # REACHY_MINI_CONTROL_APP_PYTHON: "/Users/<you>/Library/Application Support/com.pollen-robotics.reachy-mini/.venv/bin/python3"
@@ -28,8 +34,7 @@ extensions:
       # REACHY_MINI_CONTROL_APP_MEDIA_BACKEND: "http"
       # REACHY_MINI_CONTROL_APP_CAMERA_URL: "http://127.0.0.1:PORT/path/to/camera"
 
-      # Camera-only adapter: disable capabilities that the Control App adapter does not expose.
-      REACHY_MINI_ENABLE_MOTION: "false"
+      REACHY_MINI_ENABLE_MOTION: "true"
       REACHY_MINI_ENABLE_CAMERA: "true"
       REACHY_MINI_ENABLE_AUDIO: "false"
       REACHY_MINI_ENABLE_TRACKING: "false"
@@ -38,3 +43,12 @@ extensions:
       - reachy_idle
       - reachy_capture_image
       - reachy_describe_current_view
+      - reachy_look_at_image_region
+      - reachy_look
+      - reachy_gesture
+      - reachy_turn_body
+      - reachy_reset_pose
+      - reachy_play_expression
+      - reachy_stop_expression
+      - reachy_dance
+      - reachy_stop_dance

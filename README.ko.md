@@ -39,9 +39,9 @@ REACHY_MINI_MOCK=1 goose-reachy-mini
 
 `goose-reachy-mini`는 stdio를 통해 MCP 서버를 실행합니다. 직접 시작하면 MCP 메시지를 기다립니다.
 
-## Reachy Mini Control App 카메라 어댑터
+## Reachy Mini Control App 어댑터
 
-Reachy Mini Control App만 실행 중이고 goose를 로봇 SDK에 직접 연결하지 않는 경우, Control App 카메라 어댑터와 함께 확장을 실행하세요. 이 어댑터는 현재 **카메라 전용**입니다. 검증된 Control App API가 나중에 추가되지 않는 한 동작, 오디오, IMU, 춤, 표정 도구는 사용할 수 없습니다.
+Reachy Mini Control App만 실행 중이고 goose를 로봇 SDK에 직접 연결하지 않는 경우, Control App 어댑터와 함께 확장을 실행하세요. 이 어댑터는 카메라 촬영을 지원하며, 정책상 허용된 경우 로컬 Control App 데몬을 통해 안전한 고수준 동작 프리셋 일부도 실행할 수 있습니다. 오디오 입력, 머리/사람/화자 트래킹, TTS는 아직 이 어댑터에서 사용할 수 없습니다.
 
 기본적으로 확장은 `http://127.0.0.1:8000` / `http://localhost:8000`에서 실행 중인 Control App 데몬을 자동 감지하고, 내장 mock 클라이언트 대신 이를 사용할 수 있습니다. 즉, 확장은 Control App이 현재 사용하는 모드를 그대로 따릅니다: mockup 시뮬레이션, MuJoCo 시뮬레이션, Lite USB 로봇 또는 무선 로봇. 시뮬레이션과 실제 하드웨어를 위해 별도 goose 설정을 만들 필요가 없습니다.
 
@@ -100,6 +100,14 @@ REACHY_MINI_CONTROL_APP_SCREEN_CROP="x,y,width,height"
 - `REACHY_MINI_CONTROL_APP_AUTH_TOKEN=<bearer token if required for HTTP>`
 
 캡처 결과가 계속 mock 이미지로 반환된다면 `reachy_get_status`를 확인하세요. `"control_app_mode": true` 및 `"mock_mode": false`가 표시되어야 합니다. 또한 `control_app_runtime_mode`, `control_app_simulation_enabled`, `control_app_mockup_sim_enabled`, `control_app_media_released`, `control_app_camera_specs_name` 같은 관련 필드를 통해 Control App의 현재 런타임 모드를 보고합니다.
+
+Control App 동작 프리셋은 별도 정책으로 제어됩니다.
+
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=simulation_only`(기본값)는 데몬이 `simulation` 또는 `mockup_simulation` 모드라고 보고할 때만 `look`, `look_at_image_region`, `gesture`, `turn_body`, `reset_pose`, 표정 fallback, 춤 fallback, stop 명령을 허용합니다.
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=off`는 데몬 동작 프리셋을 비활성화합니다.
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=always`는 실제 로봇 모드에서도 프리셋을 활성화합니다. 명시적인 opt-in 용도이므로 물리 환경이 안전할 때만 사용하세요.
+
+Control App 프리셋 어댑터는 로컬 데몬의 `/api/move/goto`로 제한된 요청을 보냅니다. 표정과 춤은 초기 구현에서 임의 recorded-move 경로가 아니라 안전한 fallback 제스처 시퀀스를 사용합니다.
 
 ## goose 설정
 
@@ -213,6 +221,8 @@ goose session --with-extension reachy-mini
 - `REACHY_MINI_CONTROL_APP_SIGNALING_HOST=localhost`
 - `REACHY_MINI_CONTROL_APP_SIGNALING_PORT=8443`
 - `REACHY_MINI_CONTROL_APP_TIMEOUT_SECONDS=5`
+- `REACHY_MINI_CONTROL_APP_MOTION_TIMEOUT_SECONDS=3`
+- `REACHY_MINI_CONTROL_APP_PRESET_POLICY=simulation_only|off|always`
 - `REACHY_MINI_CONTROL_APP_AUTH_TOKEN=<optional bearer token>`
 - `REACHY_MINI_ENABLE_MOTION=true|false`
 - `REACHY_MINI_ENABLE_CAMERA=true|false`

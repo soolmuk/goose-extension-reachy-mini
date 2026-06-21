@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from .recorded_moves import fallback_gesture_for_expression
 from .schemas import DirectionResult, FrameResult, MotionResult, ToolError, utc_now_iso
 
 _MAX_FRAME_BYTES = 10 * 1024 * 1024
@@ -150,6 +152,8 @@ class ControlAppClient:
         signaling_host: str = "localhost",
         signaling_port: int = 8443,
         daemon_status: dict[str, Any] | None = None,
+        preset_policy: str = "simulation_only",
+        motion_timeout_seconds: float = 3.0,
     ) -> None:
         selected_backend = media_backend.strip().lower() if media_backend else "auto"
         if selected_backend not in _VALID_MEDIA_BACKENDS:
@@ -172,9 +176,12 @@ class ControlAppClient:
         self._daemon_status_url = _daemon_status_url(self.daemon_url)
         self.signaling_host = signaling_host or _host_from_url(self.daemon_url) or "localhost"
         self.signaling_port = signaling_port
+        self.preset_policy = preset_policy if preset_policy in {"off", "simulation_only", "always"} else "simulation_only"
+        self.motion_timeout_seconds = motion_timeout_seconds
         self._daemon_status = daemon_status
         self._last_error: str | None = None
         self._last_capture_transport: str | None = None
+        self._active_move_ids: dict[str, str] = {}
 
     @property
     def configured(self) -> bool:
@@ -189,6 +196,7 @@ class ControlAppClient:
         daemon_status = self._refresh_daemon_status()
         mode = _daemon_mode(daemon_status)
         media_available = _daemon_media_available(daemon_status)
+        motion_available, motion_reason = self._motion_presets_allowed(daemon_status)
         return {
             "connected": self.configured and self._last_error is None,
             "media_backend": self.media_backend,
@@ -198,9 +206,9 @@ class ControlAppClient:
             "camera_available": self.configured and media_available,
             "audio_available": False,
             "imu_available": False,
-            "motion_available": False,
-            "recorded_emotions_available": False,
-            "dances_available": False,
+            "motion_available": motion_available,
+            "recorded_emotions_available": motion_available,
+            "dances_available": motion_available,
             "head_tracking_available": False,
             "mock_mode": False,
             "control_app_mode": True,
@@ -209,6 +217,8 @@ class ControlAppClient:
             "control_app_mockup_sim_enabled": bool(daemon_status.get("mockup_sim_enabled", False)),
             "control_app_media_released": bool(daemon_status.get("media_released", False)),
             "control_app_no_media": bool(daemon_status.get("no_media", False)),
+            "control_app_preset_policy": self.preset_policy,
+            "control_app_motion_available_reason": motion_reason,
             "control_app_state": daemon_status.get("state"),
             "control_app_camera_specs_name": daemon_status.get("camera_specs_name"),
             "camera_source": _redact_url(self._camera_entrypoint_url()),
@@ -248,22 +258,71 @@ class ControlAppClient:
             raise
 
     def look(self, direction: str, intensity: str) -> MotionResult:
-        return self._unavailable_motion("look", direction=direction, intensity=intensity)
-
-    def look_at_image_region(self, region: str, intensity: str) -> MotionResult:
-        return self._unavailable_motion("look_at_image_region", region=region, intensity=intensity)
-
-    def gesture(self, gesture: str, times: int, intensity: str) -> MotionResult:
-        return self._unavailable_motion(
-            "gesture", gesture=gesture, times=times, intensity=intensity
+        unavailable = self._motion_unavailable_due_to_policy(
+            "look", direction=direction, intensity=intensity
+        )
+        if unavailable:
+            return unavailable
+        payload = self._look_payload(direction, intensity)
+        response = self._post_goto(payload, active_key="look")
+        return MotionResult(
+            action="look",
+            message="Look preset sent to the Control App daemon.",
+            details={"direction": direction, "intensity": intensity, "daemon_response": response},
         )
 
+    def look_at_image_region(self, region: str, intensity: str) -> MotionResult:
+        unavailable = self._motion_unavailable_due_to_policy(
+            "look_at_image_region", region=region, intensity=intensity
+        )
+        if unavailable:
+            return unavailable
+        payload = self._image_region_payload(region, intensity)
+        response = self._post_goto(payload, active_key="look")
+        return MotionResult(
+            action="look_at_image_region",
+            message="Image-region look preset sent to the Control App daemon.",
+            details={"region": region, "intensity": intensity, "daemon_response": response},
+        )
+
+    def gesture(self, gesture: str, times: int, intensity: str) -> MotionResult:
+        unavailable = self._motion_unavailable_due_to_policy(
+            "gesture", gesture=gesture, times=times, intensity=intensity
+        )
+        if unavailable:
+            return unavailable
+        return self._run_gesture(gesture, times, intensity, active_key="gesture")
+
     def turn_body(self, direction: str, amount: str) -> MotionResult:
-        return self._unavailable_motion("turn_body", direction=direction, amount=amount)
+        unavailable = self._motion_unavailable_due_to_policy(
+            "turn_body", direction=direction, amount=amount
+        )
+        if unavailable:
+            return unavailable
+        payload = self._body_yaw_payload(direction, amount)
+        response = self._post_goto(payload, active_key="turn_body")
+        return MotionResult(
+            action="turn_body",
+            message="Body-yaw preset sent to the Control App daemon.",
+            details={"direction": direction, "amount": amount, "daemon_response": response},
+        )
 
     def reset_pose(self, include_antennas: bool = True, include_body: bool = True) -> MotionResult:
-        return self._unavailable_motion(
+        unavailable = self._motion_unavailable_due_to_policy(
             "reset_pose", include_antennas=include_antennas, include_body=include_body
+        )
+        if unavailable:
+            return unavailable
+        payload = self._reset_payload(include_antennas, include_body)
+        response = self._post_goto(payload, active_key="reset_pose")
+        return MotionResult(
+            action="reset_pose",
+            message="Neutral pose preset sent to the Control App daemon.",
+            details={
+                "include_antennas": include_antennas,
+                "include_body": include_body,
+                "daemon_response": response,
+            },
         )
 
     def track_head(self, enabled: bool, mode: str, duration_seconds: float) -> MotionResult:
@@ -282,7 +341,7 @@ class ControlAppClient:
         say_message: bool = False,
         message: str | None = None,
     ) -> MotionResult:
-        return self._unavailable_motion(
+        unavailable = self._motion_unavailable_due_to_policy(
             "play_expression",
             expression=expression,
             intensity=intensity,
@@ -290,15 +349,71 @@ class ControlAppClient:
             say_message=say_message,
             message=message,
         )
+        if unavailable:
+            return unavailable
+        if expression == "random":
+            expression = "happy"
+        gesture = fallback_gesture_for_expression(expression)
+        if not gesture:
+            return MotionResult(
+                status="unavailable",
+                action="play_expression",
+                message=(
+                    f"No Control App simulation fallback gesture is mapped for "
+                    f"expression {expression!r}."
+                ),
+                details={
+                    "expression": expression,
+                    "intensity": intensity,
+                    "duration_seconds": duration_seconds,
+                    "say_message": say_message,
+                    "message": message,
+                },
+            )
+        result = self._run_gesture(gesture, 1, intensity, active_key="expression")
+        result.action = "play_expression"
+        result.details.update(
+            {
+                "expression": expression,
+                "fallback_gesture": gesture,
+                "source": "fallback_gesture",
+                "duration_seconds": duration_seconds,
+                "say_message": say_message,
+                "message": message,
+            }
+        )
+        return result
 
     def stop_expression(self) -> MotionResult:
-        return self._unavailable_motion("stop_expression")
+        return self._stop_active_move("stop_expression", "expression")
 
     def dance(self, dance: str, repeat: int) -> MotionResult:
-        return self._unavailable_motion("dance", dance=dance, repeat=repeat)
+        unavailable = self._motion_unavailable_due_to_policy("dance", dance=dance, repeat=repeat)
+        if unavailable:
+            return unavailable
+        selected = "happy_wiggle" if dance == "random" else dance
+        dance_sequences = {
+            "happy_wiggle": ["small_bounce", "antenna_wave"],
+            "celebration": ["antenna_perk_up", "small_bounce", "yes"],
+            "silly": ["look_around_short", "antenna_wave"],
+            "groove": ["curious_tilt_left", "curious_tilt_right", "small_bounce"],
+        }
+        sequence = dance_sequences.get(selected)
+        if not sequence:
+            return self._unavailable_motion("dance", dance=dance, repeat=repeat)
+        responses: list[dict[str, object]] = []
+        for _ in range(repeat):
+            for gesture_name in sequence:
+                result = self._run_gesture(gesture_name, 1, "small", active_key="dance")
+                responses.append(result.model_dump())
+        return MotionResult(
+            action="dance",
+            message="Dance fallback sequence sent to the Control App daemon.",
+            details={"dance": selected, "repeat": repeat, "steps": responses},
+        )
 
     def stop_dance(self) -> MotionResult:
-        return self._unavailable_motion("stop_dance")
+        return self._stop_active_move("stop_dance", "dance")
 
     def listen_audio_sample(self, duration_seconds: float) -> dict[str, object]:
         raise ToolError("Audio capture is not exposed by the Control App camera adapter.")
@@ -343,6 +458,233 @@ class ControlAppClient:
             else:
                 self._last_error = "No Control App daemon detected."
         return self._daemon_status or {}
+
+    def _motion_presets_allowed(self, daemon_status: dict[str, Any] | None = None) -> tuple[bool, str]:
+        status = daemon_status if daemon_status is not None else self._refresh_daemon_status()
+        mode = _daemon_mode(status)
+        if self.preset_policy == "off":
+            return False, "Control App preset motion is disabled by policy."
+        if self.preset_policy == "always":
+            return True, f"Control App preset motion is enabled for mode {mode!r}."
+        if self.preset_policy == "simulation_only":
+            if mode in {"simulation", "mockup_simulation"}:
+                return True, f"Control App preset motion is enabled for simulation mode {mode!r}."
+            return (
+                False,
+                "Control App preset motion is allowed only in simulation modes "
+                f"when REACHY_MINI_CONTROL_APP_PRESET_POLICY=simulation_only. Current mode: {mode}.",
+            )
+        return False, f"Unknown Control App preset policy: {self.preset_policy!r}."
+
+    def _motion_unavailable_due_to_policy(self, action: str, **details: object) -> MotionResult | None:
+        allowed, reason = self._motion_presets_allowed()
+        if allowed:
+            return None
+        details = {**details, "reason": reason, "preset_policy": self.preset_policy}
+        return MotionResult(status="unavailable", action=action, message=reason, details=details)
+
+    def _daemon_api_url(self, path: str) -> str:
+        return f"{self.daemon_url.rstrip('/')}/api/{path.lstrip('/')}"
+
+    def _request_json(
+        self, method: str, path: str, payload: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "goose-reachy-mini-control-app-adapter/0.1",
+        }
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+        request = Request(self._daemon_api_url(path), data=data, headers=headers, method=method)
+        try:
+            with urlopen(request, timeout=self.motion_timeout_seconds) as response:  # nosec B310
+                response_data = response.read(512 * 1024)
+        except HTTPError as exc:
+            detail = exc.read(4096).decode("utf-8", errors="replace").strip()
+            raise ToolError(
+                f"Control App motion API HTTP error {exc.code} for {path}: {detail or exc.reason}"
+            ) from exc
+        except URLError as exc:
+            raise ToolError(f"Could not reach Control App motion API {path}: {exc}") from exc
+        except TimeoutError as exc:
+            raise ToolError(f"Timed out calling Control App motion API {path}") from exc
+
+        if not response_data.strip():
+            return {"status": "ok"}
+        try:
+            decoded = json.loads(response_data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ToolError(f"Control App motion API {path} returned non-JSON data.") from exc
+        if isinstance(decoded, dict):
+            return decoded
+        return {"result": decoded}
+
+    def _post_json(self, path: str, payload: dict[str, object]) -> dict[str, object]:
+        return self._request_json("POST", path, payload)
+
+    def _post_goto(
+        self, payload: dict[str, object], active_key: str | None = None
+    ) -> dict[str, object]:
+        response = self._post_json("move/goto", payload)
+        self._remember_move_id(active_key, response)
+        return response
+
+    def _remember_move_id(self, active_key: str | None, response: dict[str, object]) -> None:
+        if not active_key:
+            return
+        uuid = response.get("uuid")
+        if isinstance(uuid, str) and uuid:
+            self._active_move_ids[active_key] = uuid
+
+    def _stop_active_move(self, action: str, active_key: str) -> MotionResult:
+        unavailable = self._motion_unavailable_due_to_policy(action)
+        if unavailable:
+            return unavailable
+        uuid = self._active_move_ids.pop(active_key, None)
+        if not uuid:
+            return MotionResult(
+                action=action,
+                message="No active Control App move id was tracked for this preset.",
+                details={"active_key": active_key},
+            )
+        response = self._post_json("move/stop", {"uuid": uuid})
+        return MotionResult(
+            action=action,
+            message="Stop request sent to the Control App daemon.",
+            details={"uuid": uuid, "daemon_response": response},
+        )
+
+    def _pose(self, *, roll: float = 0.0, pitch: float = 0.0, yaw: float = 0.0) -> dict[str, float]:
+        return {"x": 0.0, "y": 0.0, "z": 0.0, "roll": roll, "pitch": pitch, "yaw": yaw}
+
+    def _goto_payload(
+        self,
+        *,
+        head_pose: dict[str, float] | None = None,
+        antennas: tuple[float, float] | None = None,
+        body_yaw: float | None = None,
+        duration: float = 0.6,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {"duration": duration, "interpolation": "minjerk"}
+        if head_pose is not None:
+            payload["head_pose"] = head_pose
+        if antennas is not None:
+            payload["antennas"] = [antennas[0], antennas[1]]
+        if body_yaw is not None:
+            payload["body_yaw"] = body_yaw
+        return payload
+
+    def _look_payload(self, direction: str, intensity: str) -> dict[str, object]:
+        angle = 0.42 if intensity == "medium" else 0.25
+        pitch_angle = 0.32 if intensity == "medium" else 0.20
+        pose_by_direction = {
+            "center": self._pose(),
+            "left": self._pose(yaw=angle),
+            "right": self._pose(yaw=-angle),
+            "up": self._pose(pitch=-pitch_angle),
+            "down": self._pose(pitch=pitch_angle),
+            "front_left": self._pose(yaw=angle, pitch=-0.08),
+            "front_right": self._pose(yaw=-angle, pitch=-0.08),
+        }
+        return self._goto_payload(head_pose=pose_by_direction.get(direction, self._pose()))
+
+    def _image_region_payload(self, region: str, intensity: str) -> dict[str, object]:
+        angle = 0.36 if intensity == "medium" else 0.22
+        pitch_angle = 0.28 if intensity == "medium" else 0.18
+        pose_by_region = {
+            "center": self._pose(),
+            "upper_left": self._pose(yaw=angle, pitch=-pitch_angle),
+            "upper_right": self._pose(yaw=-angle, pitch=-pitch_angle),
+            "lower_left": self._pose(yaw=angle, pitch=pitch_angle),
+            "lower_right": self._pose(yaw=-angle, pitch=pitch_angle),
+            "person_candidate": self._pose(),
+            "object_candidate": self._pose(),
+        }
+        return self._goto_payload(head_pose=pose_by_region.get(region, self._pose()))
+
+    def _body_yaw_payload(self, direction: str, amount: str) -> dict[str, object]:
+        angle = 0.45 if amount == "medium" else 0.25
+        yaw = 0.0 if direction == "center" else angle if direction == "left" else -angle
+        return self._goto_payload(body_yaw=yaw)
+
+    def _reset_payload(self, include_antennas: bool, include_body: bool) -> dict[str, object]:
+        return self._goto_payload(
+            head_pose=self._pose(),
+            antennas=(0.0, 0.0) if include_antennas else None,
+            body_yaw=0.0 if include_body else None,
+        )
+
+    def _gesture_steps(self, gesture: str, intensity: str) -> list[dict[str, object]] | None:
+        small = intensity != "medium"
+        yaw = 0.25 if small else 0.42
+        pitch = 0.20 if small else 0.32
+        roll = 0.20 if small else 0.32
+        bounce_body = 0.10 if small else 0.18
+        steps = {
+            "yes": [
+                self._goto_payload(head_pose=self._pose(pitch=pitch), duration=0.35),
+                self._goto_payload(head_pose=self._pose(pitch=-pitch), duration=0.35),
+                self._goto_payload(head_pose=self._pose(), duration=0.35),
+            ],
+            "yes_understanding": [
+                self._goto_payload(head_pose=self._pose(pitch=pitch), antennas=(0.4, 0.4), duration=0.35),
+                self._goto_payload(head_pose=self._pose(), antennas=(0.0, 0.0), duration=0.35),
+            ],
+            "no": [
+                self._goto_payload(head_pose=self._pose(yaw=yaw), duration=0.35),
+                self._goto_payload(head_pose=self._pose(yaw=-yaw), duration=0.35),
+                self._goto_payload(head_pose=self._pose(), duration=0.35),
+            ],
+            "no_firm": [
+                self._goto_payload(head_pose=self._pose(yaw=0.45), duration=0.3),
+                self._goto_payload(head_pose=self._pose(yaw=-0.45), duration=0.3),
+                self._goto_payload(head_pose=self._pose(), duration=0.3),
+            ],
+            "curious_tilt_left": [self._goto_payload(head_pose=self._pose(roll=roll), duration=0.45)],
+            "curious_tilt_right": [self._goto_payload(head_pose=self._pose(roll=-roll), duration=0.45)],
+            "look_around_short": [
+                self._goto_payload(head_pose=self._pose(yaw=yaw), duration=0.35),
+                self._goto_payload(head_pose=self._pose(yaw=-yaw), duration=0.35),
+                self._goto_payload(head_pose=self._pose(), duration=0.35),
+            ],
+            "small_bounce": [
+                self._goto_payload(head_pose=self._pose(pitch=0.10), body_yaw=-bounce_body, duration=0.25),
+                self._goto_payload(head_pose=self._pose(pitch=-0.10), body_yaw=bounce_body, duration=0.25),
+                self._goto_payload(head_pose=self._pose(), body_yaw=0.0, duration=0.25),
+            ],
+            "shy_tilt": [self._goto_payload(head_pose=self._pose(roll=roll, pitch=pitch), duration=0.45)],
+            "thinking_wobble_short": [
+                self._goto_payload(head_pose=self._pose(roll=0.14), duration=0.25),
+                self._goto_payload(head_pose=self._pose(roll=-0.14), duration=0.25),
+                self._goto_payload(head_pose=self._pose(), duration=0.25),
+            ],
+            "antenna_wave": [
+                self._goto_payload(antennas=(0.45, -0.45), duration=0.25),
+                self._goto_payload(antennas=(-0.45, 0.45), duration=0.25),
+                self._goto_payload(antennas=(0.0, 0.0), duration=0.25),
+            ],
+            "antenna_perk_up": [self._goto_payload(antennas=(0.45, 0.45), duration=0.35)],
+            "antenna_relax": [self._goto_payload(antennas=(-0.20, -0.20), duration=0.35)],
+        }
+        return steps.get(gesture)
+
+    def _run_gesture(self, gesture: str, times: int, intensity: str, active_key: str) -> MotionResult:
+        steps = self._gesture_steps(gesture, intensity)
+        if steps is None:
+            return self._unavailable_motion("gesture", gesture=gesture, times=times, intensity=intensity)
+        responses: list[dict[str, object]] = []
+        for _ in range(times):
+            for step in steps:
+                responses.append(self._post_goto(step, active_key=active_key))
+                time.sleep(min(float(step.get("duration", 0.1)), 0.35))
+        return MotionResult(
+            action="gesture",
+            message="Gesture fallback sequence sent to the Control App daemon.",
+            details={"gesture": gesture, "times": times, "intensity": intensity, "steps": responses},
+        )
 
     def _capture_frame_bytes(self) -> bytes:
         daemon_status = self._refresh_daemon_status()

@@ -87,6 +87,8 @@ def _create_control_app_client(
         signaling_host=signaling_host,
         signaling_port=settings.control_app_signaling_port,
         daemon_status=daemon_status,
+        preset_policy=settings.control_app_preset_policy,
+        motion_timeout_seconds=settings.control_app_motion_timeout_seconds,
     )
 
 
