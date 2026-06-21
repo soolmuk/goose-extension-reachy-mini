@@ -318,18 +318,30 @@ class ControlAppClient:
         return None
 
     def _refresh_daemon_status(self) -> dict[str, Any]:
-        status = fetch_control_app_daemon_status(
-            self.daemon_url,
-            timeout_seconds=min(self.timeout_seconds, 2.0),
-            auth_token=self.auth_token,
-        )
+        try:
+            status = fetch_control_app_daemon_status(
+                self.daemon_url,
+                timeout_seconds=min(self.timeout_seconds, 2.0),
+                auth_token=self.auth_token,
+            )
+        except Exception as exc:
+            self._last_error = f"Daemon status fetch failed: {exc}"
+            return self._daemon_status or {}
+
         if status is not None:
             self._daemon_status = status
+            self._last_error = None
             discovered_url = status.get("_daemon_url")
             if isinstance(discovered_url, str) and discovered_url:
                 self.daemon_url = discovered_url
                 if self.base_url is None:
                     self.base_url = _normalize_base_url(discovered_url)
+        else:
+            # Daemon was reachable before but is not responding now.
+            if self._daemon_status:
+                self._last_error = "Control App daemon is not responding."
+            else:
+                self._last_error = "No Control App daemon detected."
         return self._daemon_status or {}
 
     def _capture_frame_bytes(self) -> bytes:
@@ -378,13 +390,12 @@ class ControlAppClient:
         raise ToolError("Control App camera capture failed. " + " | ".join(errors))
 
     def _should_capture_screen(self, daemon_status: dict[str, Any]) -> bool:
-        if self.capture_source == "screen":
-            return True
-        if self.capture_source == "camera":
-            return False
-        if self.camera_url or self.control_app_media_backend != "auto":
-            return False
-        return _daemon_mode(daemon_status) in {"simulation", "mockup_simulation"}
+        # Screen capture is ONLY used when the user explicitly requests it via
+        # capture_source="screen". In simulation mode the Control App exposes the
+        # host webcam as Reachy Mini's camera, so we should still route through
+        # the normal camera media stack (HTTP / WebRTC / local) rather than
+        # falling back to a desktop screenshot.
+        return self.capture_source == "screen"
 
     def _camera_entrypoint_url(self) -> str:
         if self.camera_url:
@@ -550,6 +561,12 @@ class ControlAppClient:
 
 def _capture_macos_screen(crop: str | None = None) -> bytes:
     """Capture the visible macOS screen as PNG bytes, optionally cropped.
+
+    This is a *user-opt-in* debugging / utility path enabled only when
+    capture_source is explicitly set to "screen". It is NOT Reachy Mini's
+    camera view, nor is it a screenshot of the Control App UI. It simply
+    records the host desktop so the user can share their screen with the
+    assistant when desired.
 
     This intentionally uses the built-in `screencapture` command instead of
     Accessibility APIs, because Accessibility permission is not always granted.

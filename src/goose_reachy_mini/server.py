@@ -18,9 +18,17 @@ _SERVER_NAME = "goose-reachy-mini"
 
 
 def create_client(settings: Settings) -> MockReachyClient | ReachyClient | ControlAppClient:
-    """Create the configured Reachy client adapter."""
+    """Create the configured Reachy client adapter.
+
+    Priority:
+    1. Explicit control_app (REACHY_MINI_CONTROL_APP=1)
+    2. Auto-detect running Control App daemon
+    3. Mock mode (fallback when nothing else is available)
+    """
 
     daemon_status = None
+
+    # 1) Explicit Control App mode
     if settings.control_app:
         daemon_status = fetch_control_app_daemon_status(
             settings.control_app_daemon_url or settings.control_app_url,
@@ -29,7 +37,9 @@ def create_client(settings: Settings) -> MockReachyClient | ReachyClient | Contr
         )
         return _create_control_app_client(settings, daemon_status)
 
-    if settings.control_app_auto and not settings.mock_explicit:
+    # 2) Auto-detect: probe for a running Control App daemon before falling back
+    #    to mock, unless the user explicitly requested mock mode.
+    if settings.control_app_auto:
         daemon_status = fetch_control_app_daemon_status(
             settings.control_app_daemon_url or settings.control_app_url,
             timeout_seconds=min(settings.control_app_timeout_seconds, 1.0),
@@ -40,6 +50,7 @@ def create_client(settings: Settings) -> MockReachyClient | ReachyClient | Contr
             settings.mock = False
             return _create_control_app_client(settings, daemon_status)
 
+    # 3) Fallback to mock or real SDK client
     if settings.mock:
         return MockReachyClient(media_backend=settings.media_backend)
     return ReachyClient(media_backend=settings.media_backend)

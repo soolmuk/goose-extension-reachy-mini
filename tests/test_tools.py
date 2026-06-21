@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 
 import pytest
+from mcp.types import ImageContent, TextContent
 
 from goose_reachy_mini.mock_reachy import MockReachyClient
 from goose_reachy_mini.schemas import Settings
@@ -54,19 +55,32 @@ def test_idle_no_action() -> None:
     assert client.calls == []
 
 
-def test_mock_capture_image_returns_base64_jpeg() -> None:
+def test_mock_capture_image_returns_image_content() -> None:
     tools, _client = make_tools()
     result = tools.reachy_capture_image()
-    assert result["mime_type"] == "image/jpeg"
-    assert result["width"] > 0
-    assert base64.b64decode(result["image_base64"])
+    assert isinstance(result, list)
+    assert len(result) >= 1
+    img = result[0]
+    assert isinstance(img, ImageContent)
+    assert img.mimeType == "image/jpeg"
+    assert base64.b64decode(img.data)
+    # Metadata text is included by default
+    if len(result) > 1:
+        assert isinstance(result[1], TextContent)
+        assert "Camera frame" in result[1].text
 
 
-def test_describe_current_view_returns_instruction() -> None:
+def test_describe_current_view_returns_image_and_instruction() -> None:
     tools, _client = make_tools()
     result = tools.reachy_describe_current_view(detail_level="brief")
-    assert "instruction" in result
-    assert "한국어" in result["instruction"]
+    assert isinstance(result, list)
+    assert len(result) == 2
+    img = result[0]
+    assert isinstance(img, ImageContent)
+    assert img.mimeType == "image/jpeg"
+    text = result[1]
+    assert isinstance(text, TextContent)
+    assert "한국어" in text.text
 
 
 def test_image_region_enum_rejects_raw_coordinates() -> None:
@@ -134,8 +148,10 @@ def test_motion_disabled_blocks_motion_tools() -> None:
 def test_camera_disabled_blocks_camera_tools() -> None:
     tools, _client = make_tools(Settings(mock=True, enable_camera=False))
     result = tools.reachy_capture_image()
-    assert result["status"] == "error"
-    assert "Camera is disabled" in result["message"]
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "Camera is disabled" in result[0].text
 
 
 def test_camera_unavailable_returns_clear_error() -> None:
@@ -147,8 +163,10 @@ def test_camera_unavailable_returns_clear_error() -> None:
 
     client.get_frame = broken_frame  # type: ignore[method-assign]
     result = tools.reachy_capture_image()
-    assert result["status"] == "error"
-    assert "camera unavailable" in result["message"]
+    assert isinstance(result, list)
+    assert len(result) == 1
+    assert isinstance(result[0], TextContent)
+    assert "camera unavailable" in result[0].text
 
 
 def test_audio_disabled_blocks_audio_tools() -> None:

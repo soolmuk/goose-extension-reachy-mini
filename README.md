@@ -1,5 +1,7 @@
 # goose-reachy-mini
 
+<p align="right"><strong>Language:</strong> English | <a href="README.ko.md">한국어</a></p>
+
 A safe, high-level MCP `stdio` extension that lets goose use Reachy Mini status,
 camera, attention, motion, expression, dance, and short audio tools.
 

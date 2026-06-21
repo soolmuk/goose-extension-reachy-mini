@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from .audio import decode_audio_base64, tts_missing_result
 from .recorded_moves import DANCE_ALLOWLIST, EXPRESSION_INTENTS
 from .safety import SafetyPolicy
+from mcp.types import ImageContent, TextContent
+
 from .schemas import (
     CaptureImageInput,
     DanceInput,
@@ -74,6 +76,28 @@ class ReachyTools:
         """Get Reachy Mini connection state and high-level capabilities."""
 
         status = self.client.get_status()
+
+        # User-friendly mode description for Control App mode
+        mode = status.get("control_app_runtime_mode")
+        if mode:
+            mode_desc = {
+                "simulation": "시뮬레이션 모드 (실물 연결되어 있으나 시뮬레이션 중)",
+                "mockup_simulation": "시뮬레이션 모드 (Control App의 모의 시뮬레이션)",
+                "real_wireless": "실물 로봇 모드 (무선 연결)",
+                "real_or_lite": "실물 로봇 모드",
+                "unknown": "연결 모드를 확인할 수 없음",
+            }.get(mode, f"알 수 없는 모드: {mode}")
+            status["mode_description"] = mode_desc
+
+            # Simple English/Chinese-friendly version too
+            status["mode_description_en"] = {
+                "simulation": "Simulation mode (physical robot connected but simulating)",
+                "mockup_simulation": "Simulation mode (Control App mockup simulation)",
+                "real_wireless": "Real robot mode (wireless)",
+                "real_or_lite": "Real robot mode",
+                "unknown": "Unable to detect connection mode",
+            }.get(mode, f"Unknown mode: {mode}")
+
         status.update(
             {
                 "motion_enabled": self.settings.enable_motion,
@@ -97,32 +121,73 @@ class ReachyTools:
 
         return {"status": "ok", "action": "idle", "message": "No robot action was performed."}
 
-    def reachy_capture_image(self, format: str = "jpeg", include_metadata: bool = True) -> dict[str, object]:
-        """Capture a single Reachy Mini camera frame."""
+    def reachy_capture_image(
+        self, format: str = "jpeg", include_metadata: bool = True
+    ) -> list[ImageContent | TextContent]:
+        """Capture a single Reachy Mini camera frame.
+
+        Returns the image as an MCP ImageContent so the AI can see it directly,
+        plus an optional TextContent with metadata.
+        """
 
         try:
             args = CaptureImageInput(format=format, include_metadata=include_metadata)
             self.safety.assert_camera_allowed("reachy_capture_image")
             frame = self.client.get_frame()
-            payload = encode_frame_for_mcp(frame, args.format, self.settings.max_image_size).model_dump()
-            if not args.include_metadata:
-                payload = {"image_base64": payload["image_base64"], "mime_type": payload["mime_type"]}
-            return payload
-        except (ToolError, ValidationError, RuntimeError) as exc:
-            return _error_result("reachy_capture_image", exc)
+            payload = encode_frame_for_mcp(frame, args.format, self.settings.max_image_size)
 
-    def reachy_describe_current_view(self, detail_level: str = "normal") -> dict[str, object]:
-        """Capture the current view and return an instruction for image-based scene description."""
+            content: list[ImageContent | TextContent] = [
+                ImageContent(
+                    type="image",
+                    data=payload.image_base64,
+                    mimeType=payload.mime_type,
+                )
+            ]
+            if args.include_metadata:
+                content.append(
+                    TextContent(
+                        type="text",
+                        text=(
+                            f"Camera frame captured: {payload.width}x{payload.height} "
+                            f"{payload.mime_type} at {payload.timestamp}"
+                        ),
+                    )
+                )
+            return content
+        except (ToolError, ValidationError, RuntimeError) as exc:
+            return [TextContent(type="text", text=str(exc))]
+
+    def reachy_describe_current_view(self, detail_level: str = "normal") -> list[ImageContent | TextContent]:
+        """Capture the current view and show it to the AI for scene description.
+
+        Returns the image as an MCP ImageContent so the AI can see it directly,
+        along with the scene description instruction in TextContent.
+        """
 
         try:
             args = DescribeCurrentViewInput(detail_level=detail_level)
             self.safety.assert_camera_allowed("reachy_describe_current_view")
             frame = self.client.get_frame()
-            payload = encode_frame_for_mcp(frame, "jpeg", self.settings.max_image_size).model_dump()
-            payload["instruction"] = build_scene_description_instruction(args.detail_level)
-            return payload
-        except (ToolError, ValidationError) as exc:
-            return _error_result("reachy_describe_current_view", exc)
+            payload = encode_frame_for_mcp(frame, "jpeg", self.settings.max_image_size)
+
+            instruction = build_scene_description_instruction(args.detail_level)
+
+            return [
+                ImageContent(
+                    type="image",
+                    data=payload.image_base64,
+                    mimeType="image/jpeg",
+                ),
+                TextContent(
+                    type="text",
+                    text=(
+                        f"{instruction}\n\n"
+                        f"Frame: {payload.width}x{payload.height} at {payload.timestamp}"
+                    ),
+                ),
+            ]
+        except (ToolError, ValidationError, RuntimeError) as exc:
+            return [TextContent(type="text", text=str(exc))]
 
     def reachy_look_at_image_region(self, region: str, intensity: str = "small") -> dict[str, object]:
         """Look toward a preset image region without exposing raw pixel coordinates."""

@@ -164,6 +164,22 @@ def test_auto_detects_running_control_app_when_mock_not_explicit(monkeypatch) ->
 
 
 def test_explicit_mock_disables_control_app_auto_detection(monkeypatch) -> None:
+    # When Control App daemon is NOT running and user explicitly asked for mock,
+    # mock should be used.
+    monkeypatch.setattr(
+        "goose_reachy_mini.server.fetch_control_app_daemon_status",
+        lambda *args, **kwargs: None,
+    )
+
+    settings = Settings(mock=True, mock_explicit=True, control_app_auto=True)
+    client = create_client(settings)
+
+    assert isinstance(client, MockReachyClient)
+
+
+def test_auto_detect_prefers_control_app_when_running(monkeypatch) -> None:
+    # When Control App daemon IS running, auto-detect should prefer it
+    # even if mock_explicit is True — the user wants to know the actual mode.
     monkeypatch.setattr(
         "goose_reachy_mini.server.fetch_control_app_daemon_status",
         lambda *args, **kwargs: {"type": "daemon_status", "robot_name": "reachy_mini"},
@@ -172,7 +188,7 @@ def test_explicit_mock_disables_control_app_auto_detection(monkeypatch) -> None:
     settings = Settings(mock=True, mock_explicit=True, control_app_auto=True)
     client = create_client(settings)
 
-    assert isinstance(client, MockReachyClient)
+    assert isinstance(client, ControlAppClient)
 
 
 def test_control_app_status_exposes_runtime_mode(monkeypatch) -> None:
@@ -220,14 +236,23 @@ def test_crop_png_bytes() -> None:
     assert cropped_image.getpixel((0, 0))[:3] == (255, 0, 0)
 
 
-def test_auto_capture_source_prefers_screen_for_simulation_without_explicit_camera() -> None:
+def test_auto_capture_source_does_not_fallback_to_screen_for_simulation() -> None:
+    # In simulation mode the Control App exposes the host webcam as Reachy
+    # Mini's camera, so auto should route through the media stack, not desktop
+    # screen capture.
     client = ControlAppClient(
         media_backend="auto",
         daemon_status={"mockup_sim_enabled": True, "no_media": False, "media_released": False},
     )
-    assert client._should_capture_screen({"mockup_sim_enabled": True}) is True
+    assert client._should_capture_screen({"mockup_sim_enabled": True}) is False
 
 
 def test_camera_capture_source_disables_screen_for_simulation() -> None:
     client = ControlAppClient(capture_source="camera", media_backend="auto")
     assert client._should_capture_screen({"mockup_sim_enabled": True}) is False
+
+
+def test_screen_capture_source_explicitly_enables_desktop_capture() -> None:
+    client = ControlAppClient(capture_source="screen", media_backend="auto")
+    assert client._should_capture_screen({"mockup_sim_enabled": True}) is True
+    assert client._should_capture_screen({"mockup_sim_enabled": False}) is True
